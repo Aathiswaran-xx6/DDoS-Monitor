@@ -1,113 +1,92 @@
 package com.ddosmonitor.service;
 
 import com.ddosmonitor.model.PacketData;
-import lombok.extern.slf4j.Slf4j;
-import org.pcap4j.core.*;
-import org.pcap4j.packet.IpV4Packet;
-import org.pcap4j.packet.Packet;
 import org.springframework.stereotype.Service;
 import org.springframework.scheduling.annotation.Scheduled;
 
-import javax.annotation.PreDestroy;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-@Slf4j
 @Service
 public class PacketMonitorService {
-    private static final String COUNT_KEY = "count";
-    private static final int SNAPSHOT_LENGTH = 65536;
-    private static final int READ_TIMEOUT = 50;
-    private static final int THRESHOLD = 1000; // Packets per minute threshold
-
     private final Map<String, Integer> packetCountMap = new ConcurrentHashMap<>();
     private final List<PacketData> packetDataList = new ArrayList<>();
-    private PcapHandle handle;
-    private ExecutorService executorService;
-    private volatile boolean isRunning = false;
+    private static final int THRESHOLD = 1000; // Packets per minute threshold
+    private Process tcpdumpProcess;
 
     public void startMonitoring() {
-        if (isRunning) {
-            log.info("Packet monitoring is already running");
-            return;
-        }
-
         try {
-            // Get network interfaces
-            PcapNetworkInterface nif = getNetworkInterface();
-            if (nif == null) {
-                log.error("No network interface found");
-                return;
-            }
-
-            // Open the network interface
-            handle = nif.openLive(SNAPSHOT_LENGTH, PcapNetworkInterface.PromiscuousMode.PROMISCUOUS, READ_TIMEOUT);
+            String[] command = {
+                "tcpdump",
+                "-n", // Don't convert addresses to names
+                "-i", "any", // Monitor all interfaces
+                "-l" // Line-buffered output
+            };
             
-            // Start packet capture in a separate thread
-            executorService = Executors.newSingleThreadExecutor();
-            isRunning = true;
+            ProcessBuilder processBuilder = new ProcessBuilder(command);
+            tcpdumpProcess = processBuilder.start();
 
-            executorService.execute(() -> {
+            BufferedReader reader = new BufferedReader(
+                new InputStreamReader(tcpdumpProcess.getInputStream())
+            );
+
+            new Thread(() -> {
+                String line;
                 try {
-                    handle.loop(-1, this::processPacket);
-                } catch (PcapNativeException | InterruptedException | NotOpenException e) {
-                    log.error("Error in packet capture loop", e);
+                    while ((line = reader.readLine()) != null) {
+                        processPacket(line);
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
                 }
-            });
+            }).start();
 
-            log.info("Started monitoring on interface: {}", nif.getName());
-        } catch (PcapNativeException e) {
-            log.error("Failed to start packet monitoring", e);
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
 
-    private PcapNetworkInterface getNetworkInterface() throws PcapNativeException {
-        // Get all network interfaces
-        List<PcapNetworkInterface> devices = Pcaps.findAllDevs();
-        
-        // Find the first active interface
-        return devices.stream()
-                .filter(dev -> dev.getLinkLayerAddresses() != null && !dev.getLinkLayerAddresses().isEmpty())
-                .findFirst()
-                .orElse(null);
-    }
-
-    private void processPacket(Packet packet) {
+    private void processPacket(String packetInfo) {
         try {
-            if (packet.contains(IpV4Packet.class)) {
-                IpV4Packet ipv4Packet = packet.get(IpV4Packet.class);
-                String sourceIp = ipv4Packet.getHeader().getSrcAddr().getHostAddress();
-                String destIp = ipv4Packet.getHeader().getDstAddr().getHostAddress();
-                
-                // Update packet count for source IP
-                packetCountMap.merge(sourceIp, 1, Integer::sum);
+            // Parse tcpdump output
+            String[] parts = packetInfo.split(" ");
+            String sourceIp = extractIp(parts[2]);
+            String destinationIp = extractIp(parts[4]);
+            String protocol = parts[5];
+            int size = Integer.parseInt(parts[parts.length - 1]);
 
-                // Create packet data
-                PacketData packetData = new PacketData(
-                    sourceIp,
-                    destIp,
-                    ipv4Packet.getHeader().getProtocol().name(),
-                    LocalDateTime.now().toString(),
-                    packet.length(),
-                    isIpSuspicious(sourceIp)
-                );
+            // Update packet count for source IP
+            packetCountMap.merge(sourceIp, 1, Integer::sum);
 
-                synchronized (packetDataList) {
-                    packetDataList.add(packetData);
-                    if (packetDataList.size() > 1000) { // Keep only last 1000 packets
-                        packetDataList.remove(0);
-                    }
+            // Create packet data
+            PacketData packet = new PacketData(
+                sourceIp,
+                destinationIp,
+                protocol,
+                LocalDateTime.now().toString(),
+                size,
+                isIpSuspicious(sourceIp)
+            );
+
+            synchronized (packetDataList) {
+                packetDataList.add(packet);
+                if (packetDataList.size() > 1000) { // Keep only last 1000 packets
+                    packetDataList.remove(0);
                 }
             }
         } catch (Exception e) {
-            log.error("Error processing packet", e);
+            e.printStackTrace();
         }
+    }
+
+    private String extractIp(String ipPort) {
+        return ipPort.split("\\.")[0]; // Extract IP address from IP:PORT format
     }
 
     private boolean isIpSuspicious(String ip) {
@@ -125,24 +104,14 @@ public class PacketMonitorService {
         }
     }
 
-    @PreDestroy
     public void stopMonitoring() {
-        isRunning = false;
-        if (handle != null) {
-            handle.breakLoop();
-            handle.close();
-        }
-        if (executorService != null) {
-            executorService.shutdown();
+        if (tcpdumpProcess != null) {
+            tcpdumpProcess.destroy();
             try {
-                if (!executorService.awaitTermination(5, TimeUnit.SECONDS)) {
-                    executorService.shutdownNow();
-                }
+                tcpdumpProcess.waitFor(5, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
-                executorService.shutdownNow();
-                Thread.currentThread().interrupt();
+                e.printStackTrace();
             }
         }
-        log.info("Packet monitoring stopped");
     }
 } 
