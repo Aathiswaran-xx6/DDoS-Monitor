@@ -1,80 +1,105 @@
-# DDoS Monitor Application
+# DDoS Monitoring System for E-Commerce Website
 
-A web application for monitoring network traffic and detecting potential DDoS attacks using React, Spring Boot, and tcpdump.
+This project consists of a DDoS monitoring system that tracks traffic to and from an e-commerce website. The system includes:
 
-## Prerequisites
+1. A victim e-commerce website (Express.js + React)
+2. A DDoS monitoring application (Spring Boot + React)
 
-- Node.js (v14 or higher)
-- Java 11 or higher
-- Maven
-- tcpdump (must be installed on the system)
-- Administrative privileges (for running tcpdump)
+## Project Structure
+
+```
+/
+├── victim-ecommerce/     # The e-commerce website (victim site)
+│   ├── server.js         # Express.js backend
+│   └── client/           # React frontend
+│
+├── backend/              # DDoS monitoring backend (Spring Boot)
+│   └── src/              # Java source code
+│
+└── frontend/             # DDoS monitoring frontend (React)
+    └── src/              # React source code
+```
 
 ## Setup Instructions
 
-### Backend Setup
+### 1. Start the E-Commerce Website (Victim Site)
 
-1. Navigate to the backend directory:
-   ```bash
-   cd backend
-   ```
+```bash
+# Start the backend server
+cd victim-ecommerce
+node server.js
 
-2. Build the Spring Boot application:
-   ```bash
-   mvn clean install
-   ```
+# In a new terminal, start the frontend
+cd victim-ecommerce/client
+npm start
+```
 
-3. Run the application:
-   ```bash
-   mvn spring-boot:run
-   ```
+The e-commerce site will be available at:
+- Backend: http://localhost:5000
+- Frontend: http://localhost:3000
 
-The backend will start on http://localhost:8080
+### 2. Start the DDoS Monitoring System
 
-### Frontend Setup
+```bash
+# Start the Spring Boot backend
+cd backend
+./mvnw spring-boot:run
 
-1. Navigate to the frontend directory:
-   ```bash
-   cd frontend
-   ```
+# In a new terminal, start the React frontend
+cd frontend
+npm start
+```
 
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
+The monitoring system will be available at:
+- Backend: http://localhost:8080
+- Frontend: http://localhost:3001 (or another available port)
 
-3. Start the development server:
-   ```bash
-   npm start
-   ```
+## Authentication
 
-The frontend will start on http://localhost:3000
+The monitoring system requires authentication to access. Use one of the following credentials:
 
-## Usage
-
-1. Open http://localhost:3000 in your browser
-2. Log in with the following credentials:
-   - Username: admin
-   - Password: admin123
-3. The dashboard will show real-time network traffic information
-4. Suspicious IP addresses will be highlighted in red
-5. The system automatically detects potential DDoS attacks based on packet frequency
+- Admin: username: `admin`, password: `admin123`
+- Monitor User: username: `monitor1`, password: `monitor123`
 
 ## Features
 
-- Real-time network traffic monitoring
-- DDoS attack detection
-- User authentication
+### E-Commerce Website (Victim)
+- Product browsing
+- Shopping cart functionality
+- User registration and login
+- Checkout process
+
+### DDoS Monitoring System
+- Real-time traffic monitoring
 - Packet analysis
-- Traffic visualization
-- IP address tracking
+- Suspicious activity detection
+- Traffic statistics and visualization
+- IP frequency analysis
+- Protocol distribution charts
 
-## Security Notes
+## Technical Details
 
-- Change the default admin credentials in production
-- Ensure proper network security measures are in place
-- Run tcpdump with appropriate permissions
-- Monitor system resources during heavy traffic
+### Packet Monitoring
+
+The system uses `tcpdump` to capture network packets to/from the e-commerce site. If `tcpdump` is not available, it falls back to simulated data for demonstration purposes.
+
+### Authentication
+
+The monitoring system uses Spring Security with JWT tokens for authentication. Only authorized users can access the monitoring dashboard.
+
+### Real-time Updates
+
+The dashboard updates in real-time using polling to fetch the latest packet data and statistics every 2 seconds.
+
+## Customization
+
+You can adjust the monitoring thresholds in `PacketMonitorService.java`:
+
+```java
+private static final int THRESHOLD = 100; // Packets per minute threshold
+```
+
+Lower this value to make the system more sensitive to potential DDoS attacks.
 
 ## License
 
