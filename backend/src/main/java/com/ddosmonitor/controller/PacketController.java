@@ -1,6 +1,8 @@
 package com.ddosmonitor.controller;
 
-import com.ddosmonitor.model.PacketData;
+import com.ddosmonitor.model.Packet;
+import com.ddosmonitor.model.Statistics;
+import com.ddosmonitor.model.BlockedIP;
 import com.ddosmonitor.service.PacketMonitorService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -10,8 +12,8 @@ import java.util.List;
 import java.util.Map;
 
 @RestController
-@RequestMapping("/api")
-@CrossOrigin(origins = "http://localhost:3000")
+@RequestMapping("/api/packets")
+@CrossOrigin(origins = "*")
 public class PacketController {
 
     private final PacketMonitorService packetMonitorService;
@@ -21,25 +23,30 @@ public class PacketController {
         this.packetMonitorService = packetMonitorService;
     }
 
-    @GetMapping("/packets")
-    public ResponseEntity<List<PacketData>> getPackets() {
+    @PostMapping
+    public ResponseEntity<Void> recordPacket(@RequestBody Packet packet) {
+        packetMonitorService.recordPacket(packet);
+        return ResponseEntity.ok().build();
+    }
+
+    @GetMapping("/recent")
+    public ResponseEntity<List<Packet>> getRecentPackets() {
         return ResponseEntity.ok(packetMonitorService.getRecentPackets());
     }
 
-    @GetMapping("/statistics")
-    public ResponseEntity<Map<String, Object>> getStatistics() {
+    @GetMapping("/stats")
+    public ResponseEntity<Statistics> getStatistics() {
         return ResponseEntity.ok(packetMonitorService.getStatistics());
     }
 
-    @PostMapping("/monitor/start")
-    public ResponseEntity<String> startMonitoring() {
-        packetMonitorService.startMonitoring();
-        return ResponseEntity.ok("Monitoring started for e-commerce site");
+    @GetMapping("/ip/{ip}/stats")
+    public ResponseEntity<Map<String, Object>> getIPStats(@PathVariable String ip) {
+        Map<String, Object> stats = packetMonitorService.getIPStats(ip);
+        return stats != null ? ResponseEntity.ok(stats) : ResponseEntity.notFound().build();
     }
 
-    @PostMapping("/monitor/stop")
-    public ResponseEntity<String> stopMonitoring() {
-        packetMonitorService.stopMonitoring();
-        return ResponseEntity.ok("Monitoring stopped");
+    @GetMapping("/blocked")
+    public ResponseEntity<List<BlockedIP>> getBlockedIPs() {
+        return ResponseEntity.ok(packetMonitorService.getBlockedIPs());
     }
 }

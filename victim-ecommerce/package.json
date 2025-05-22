@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@types/react-router-dom": "^5.3.3",
+    "@types/socket.io-client": "^3.0.0",
     "autoprefixer": "^10.4.21",
     "axios": "^1.8.3",
     "bcryptjs": "^2.4.3",
@@ -20,6 +21,8 @@
     "mongoose": "^6.13.8",
     "postcss": "^8.5.3",
     "react-router-dom": "^7.3.0",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
     "tailwindcss": "^4.0.14"
   },
   "devDependencies": {

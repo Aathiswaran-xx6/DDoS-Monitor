@@ -3,6 +3,8 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const bodyParser = require('body-parser');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -10,9 +12,120 @@ const port = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/ecommerce';
 
+// Create HTTP server after app initialization
+const http = require('http').createServer(app);
+const io = require('socket.io')(http, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
+
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use(bodyParser.json());
+
+// Traffic monitoring
+const trafficLog = [];
+const MAX_TRAFFIC_LOG_SIZE = 100;
+
+// Store blocked IPs and their unblock times
+const blockedIPs = new Map();
+
+// Middleware to check if IP is blocked
+const checkBlockedIP = (req, res, next) => {
+  const clientIP = req.ip || req.connection.remoteAddress;
+  const blockInfo = blockedIPs.get(clientIP);
+  
+  if (blockInfo) {
+    const now = new Date().getTime();
+    if (now < blockInfo.unblockAt) {
+      return res.status(403).json({
+        error: 'Access Denied',
+        message: 'Your IP has been blocked due to suspicious activity',
+        blockedUntil: new Date(blockInfo.unblockAt).toISOString()
+      });
+    } else {
+      // Remove expired block
+      blockedIPs.delete(clientIP);
+    }
+  }
+  next();
+};
+
+// Clean up expired blocks periodically
+setInterval(() => {
+  const now = new Date().getTime();
+  for (const [ip, blockInfo] of blockedIPs.entries()) {
+    if (now >= blockInfo.unblockAt) {
+      blockedIPs.delete(ip);
+    }
+  }
+}, 60000); // Check every minute
+
+// Request monitoring middleware
+app.use((req, res, next) => {
+  const startTime = Date.now();
+
+  // Get the real IP address
+  const ip = req.headers['x-forwarded-for'] || 
+             req.connection.remoteAddress || 
+             req.socket.remoteAddress || 
+             req.ip;
+
+  // Capture response
+  const originalSend = res.send;
+  res.send = function(...args) {
+    const endTime = Date.now();
+    const duration = endTime - startTime;
+
+    // Create request data object
+    const requestData = {
+      ip: ip,
+      method: req.method,
+      path: req.path,
+      timestamp: new Date().toISOString(),
+      duration: duration,
+      statusCode: res.statusCode,
+      userAgent: req.get('user-agent')
+    };
+
+    // Log the request
+    console.log('API Request:', {
+      method: requestData.method,
+      path: requestData.path,
+      ip: requestData.ip,
+      statusCode: requestData.statusCode
+    });
+
+    // Emit through socket.io
+    io.emit('request-log', requestData);
+
+    // Call original send
+    return originalSend.apply(res, args);
+  };
+
+  next();
+});
+
+// Socket connection handling
+io.on('connection', (socket) => {
+  console.log('Monitor client connected');
+  
+  socket.on('block-ip', ({ ip, duration }) => {
+    const unblockAt = new Date().getTime() + duration;
+    blockedIPs.set(ip, {
+      blockedAt: new Date().getTime(),
+      unblockAt: unblockAt
+    });
+    console.log(`Blocked IP ${ip} until ${new Date(unblockAt).toISOString()}`);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('Monitor client disconnected');
+  });
+});
 
 // MongoDB Connection (if available)
 let useMongoDB = false;
@@ -62,45 +175,38 @@ const users = [
 const products = [
   {
     id: 1,
-    name: 'Smartphone',
-    price: 699.99,
-    description: 'Latest model smartphone with high-end features',
-    image: 'https://via.placeholder.com/200'
+    name: "Smartphone X",
+    price: 999.99,
+    description: "Latest smartphone with advanced features",
+    image: "/assets/images/smartphone.jpg"
   },
   {
     id: 2,
-    name: 'Laptop',
-    price: 1299.99,
-    description: 'Powerful laptop for work and gaming',
-    image: 'https://via.placeholder.com/200'
+    name: "Laptop Pro",
+    price: 1499.99,
+    description: "High-performance laptop for professionals",
+    image: "/assets/images/laptop.jpg"
   },
   {
     id: 3,
-    name: 'Headphones',
+    name: "Wireless Headphones",
     price: 199.99,
-    description: 'Wireless noise-canceling headphones',
-    image: 'https://via.placeholder.com/200'
+    description: "Premium wireless headphones with noise cancellation",
+    image: "/assets/images/headphones.jpg"
   },
   {
     id: 4,
-    name: 'Smartwatch',
-    price: 249.99,
-    description: 'Fitness tracker and smartphone companion',
-    image: 'https://via.placeholder.com/200'
+    name: "Smart Watch",
+    price: 299.99,
+    description: "Fitness tracking smartwatch with heart rate monitor",
+    image: "/assets/images/smartwatch.jpg"
   },
   {
     id: 5,
-    name: 'Camera',
-    price: 549.99,
-    description: 'Digital camera with 4K video recording',
-    image: 'https://via.placeholder.com/200'
-  },
-  {
-    id: 6,
-    name: 'Tablet',
-    price: 399.99,
-    description: 'Portable tablet for entertainment and productivity',
-    image: 'https://via.placeholder.com/200'
+    name: "Tablet Air",
+    price: 799.99,
+    description: "Lightweight tablet perfect for entertainment",
+    image: "/assets/images/tablet.jpg"
   }
 ];
 
@@ -405,8 +511,35 @@ app.delete('/api/cart/:userId/:productId', authenticateToken, async (req, res) =
   }
 });
 
+// API endpoint to get traffic data
+app.get('/api/traffic', (req, res) => {
+  res.json(trafficLog);
+});
+
+// Serve static files from the public directory
+app.use('/assets', express.static('public/assets'));
+
+// Serve static assets if in production
+if (process.env.NODE_ENV === 'production') {
+  // Set static folder
+  app.use(express.static('client/build'));
+  
+  app.get('*', (req, res) => {
+    res.sendFile(path.resolve(__dirname, 'client', 'build', 'index.html'));
+  });
+}
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({
+    error: 'Internal Server Error',
+    message: 'Something went wrong'
+  });
+});
+
 // Start server
-app.listen(port, () => {
-  console.log(`Server is running on port: ${port}`);
+http.listen(port, () => {
+  console.log(`Server running on port ${port}`);
   console.log(`Using ${useMongoDB ? 'MongoDB' : 'in-memory storage'} for data persistence`);
 }); 

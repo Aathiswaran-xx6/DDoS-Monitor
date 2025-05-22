@@ -1,220 +1,105 @@
 package com.ddosmonitor.service;
 
-import com.ddosmonitor.model.PacketData;
+import com.ddosmonitor.model.Packet;
+import com.ddosmonitor.model.Statistics;
+import com.ddosmonitor.model.BlockedIP;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import org.springframework.scheduling.annotation.Scheduled;
-
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 public class PacketMonitorService {
-    private final Map<String, Integer> packetCountMap = new ConcurrentHashMap<>();
-    private final List<PacketData> packetDataList = new ArrayList<>();
-    private static final int THRESHOLD = 100; // Lower threshold for demo purposes
-    private Process tcpdumpProcess;
-    
-    // E-commerce site details
-    private static final String ECOMMERCE_HOST = "localhost";
-    private static final int ECOMMERCE_PORT = 5000; // The port your e-commerce site is running on
-    
-    // Track traffic statistics
-    private int totalPackets = 0;
-    private int suspiciousPackets = 0;
-    private final Map<String, Integer> ipFrequency = new ConcurrentHashMap<>();
-    private final Map<String, Integer> protocolDistribution = new ConcurrentHashMap<>();
+    private final Map<String, List<Packet>> ipPackets = new ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> requestCounts = new ConcurrentHashMap<>();
+    private final Map<String, Instant> blockedIPs = new ConcurrentHashMap<>();
+    private final List<Packet> recentPackets = Collections.synchronizedList(new ArrayList<>());
+    private final Statistics statistics = new Statistics();
+    private final MLAnomalyDetectionService mlService;
 
-    public void startMonitoring() {
-        try {
-            // Filter for traffic to/from the e-commerce site
-            String[] command = {
-                "tcpdump",
-                "-n", // Don't convert addresses to names
-                "-i", "any", // Monitor all interfaces
-                "-l", // Line-buffered output
-                "host " + ECOMMERCE_HOST + " and (port " + ECOMMERCE_PORT + " or port 3000)"
-            };
-            
-            ProcessBuilder processBuilder = new ProcessBuilder(command);
-            tcpdumpProcess = processBuilder.start();
+    @Autowired
+    public PacketMonitorService(MLAnomalyDetectionService mlService) {
+        this.mlService = mlService;
+    }
 
-            BufferedReader reader = new BufferedReader(
-                new InputStreamReader(tcpdumpProcess.getInputStream())
-            );
-
-            new Thread(() -> {
-                String line;
-                try {
-                    while ((line = reader.readLine()) != null) {
-                        processPacket(line);
-                    }
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
-            }).start();
-
-        } catch (Exception e) {
-            e.printStackTrace();
-            // Fallback to simulated data if tcpdump fails
-            startSimulation();
+    public void recordPacket(Packet packet) {
+        // Check if IP is blocked by ML service
+        if (mlService.isIPBlocked(packet.getSourceIP())) {
+            packet.setBlocked(true);
+            packet.setBlockReason("ML Anomaly Detection");
+            recentPackets.add(0, packet);
+            return;
         }
+
+        // Record request for ML analysis
+        mlService.recordRequest(
+            packet.getSourceIP(),
+            packet.getEndpoint(),
+            packet.getResponseTime(),
+            packet.getStatusCode()
+        );
+
+        // Update packet tracking
+        ipPackets.computeIfAbsent(packet.getSourceIP(), k -> new ArrayList<>()).add(packet);
+        requestCounts.computeIfAbsent(packet.getSourceIP(), k -> new AtomicInteger(0)).incrementAndGet();
+        recentPackets.add(0, packet);
+
+        // Update statistics
+        statistics.setTotalPackets(statistics.getTotalPackets() + 1);
+        statistics.setUniqueIPs(ipPackets.size());
+        statistics.setBlockedIPs(blockedIPs.size());
+
+        // Clean up old data
+        cleanupOldData();
     }
 
-    private void startSimulation() {
-        new Thread(() -> {
-            try {
-                while (true) {
-                    simulatePacket();
-                    Thread.sleep(500); // Generate a packet every 500ms
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }).start();
-    }
-
-    private void simulatePacket() {
-        String[] sourceIps = {"192.168.1.100", "10.0.0.5", "172.16.0.10", "192.168.1.200"};
-        String[] protocols = {"TCP", "UDP", "HTTP", "HTTPS"};
+    private void cleanupOldData() {
+        Instant cutoff = Instant.now().minusSeconds(60);
+        recentPackets.removeIf(packet -> packet.getTimestamp().isBefore(cutoff));
         
-        String sourceIp = sourceIps[(int) (Math.random() * sourceIps.length)];
-        String protocol = protocols[(int) (Math.random() * protocols.length)];
-        int size = 100 + (int) (Math.random() * 1000);
+        // Clean up blocked IPs
+        blockedIPs.entrySet().removeIf(entry -> 
+            entry.getValue().isBefore(Instant.now()));
+    }
+
+    public List<Packet> getRecentPackets() {
+        return new ArrayList<>(recentPackets);
+    }
+
+    public Map<String, Object> getIPStats(String ip) {
+        Map<String, Object> stats = new HashMap<>();
         
-        // Occasionally generate suspicious traffic
-        boolean generateSuspicious = Math.random() < 0.2;
-        
-        if (generateSuspicious) {
-            // Use a specific IP for suspicious traffic
-            sourceIp = "10.0.0.99";
-            // Generate multiple packets in quick succession
-            for (int i = 0; i < 10; i++) {
-                packetCountMap.merge(sourceIp, 1, Integer::sum);
-                
-                PacketData packet = new PacketData(
-                    sourceIp,
-                    ECOMMERCE_HOST,
-                    protocol,
-                    LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
-                    size,
-                    isIpSuspicious(sourceIp)
-                );
-                
-                addPacket(packet);
-            }
-        } else {
-            // Update packet count for source IP
-            packetCountMap.merge(sourceIp, 1, Integer::sum);
-            
-            PacketData packet = new PacketData(
-                sourceIp,
-                ECOMMERCE_HOST,
-                protocol,
-                LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
-                size,
-                isIpSuspicious(sourceIp)
-            );
-            
-            addPacket(packet);
+        // Get ML-based stats
+        Map<String, Object> mlStats = mlService.getIPStats(ip);
+        if (mlStats != null) {
+            stats.putAll(mlStats);
         }
-    }
 
-    private void processPacket(String packetInfo) {
-        try {
-            // Parse tcpdump output
-            String[] parts = packetInfo.split(" ");
-            String sourceIp = extractIp(parts[2]);
-            String destinationIp = extractIp(parts[4]);
-            String protocol = parts[5];
-            int size = Integer.parseInt(parts[parts.length - 1]);
-
-            // Update packet count for source IP
-            packetCountMap.merge(sourceIp, 1, Integer::sum);
-            
-            // Create packet data
-            PacketData packet = new PacketData(
-                sourceIp,
-                destinationIp,
-                protocol,
-                LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
-                size,
-                isIpSuspicious(sourceIp)
-            );
-
-            addPacket(packet);
-        } catch (Exception e) {
-            e.printStackTrace();
+        // Get basic stats
+        List<Packet> packets = ipPackets.get(ip);
+        if (packets != null) {
+            stats.put("packetCount", packets.size());
+            stats.put("requestCount", requestCounts.getOrDefault(ip, new AtomicInteger(0)).get());
         }
-    }
-    
-    private void addPacket(PacketData packet) {
-        synchronized (packetDataList) {
-            packetDataList.add(packet);
-            if (packetDataList.size() > 1000) { // Keep only last 1000 packets
-                packetDataList.remove(0);
-            }
-            
-            // Update statistics
-            totalPackets++;
-            if (packet.isSuspicious()) {
-                suspiciousPackets++;
-            }
-            
-            // Update IP frequency
-            ipFrequency.merge(packet.getSourceIp(), 1, Integer::sum);
-            
-            // Update protocol distribution
-            protocolDistribution.merge(packet.getProtocol(), 1, Integer::sum);
-        }
-    }
 
-    private String extractIp(String ipPort) {
-        if (ipPort.contains(".")) {
-            return ipPort.split("\\.")[0]; // Extract IP address from IP:PORT format
-        }
-        return ipPort;
-    }
-
-    private boolean isIpSuspicious(String ip) {
-        return packetCountMap.getOrDefault(ip, 0) > THRESHOLD;
-    }
-
-    @Scheduled(fixedRate = 60000) // Clear counters every minute
-    public void clearCounters() {
-        packetCountMap.clear();
-    }
-
-    public List<PacketData> getRecentPackets() {
-        synchronized (packetDataList) {
-            return new ArrayList<>(packetDataList);
-        }
-    }
-    
-    public Map<String, Object> getStatistics() {
-        Map<String, Object> stats = new ConcurrentHashMap<>();
-        stats.put("totalPackets", totalPackets);
-        stats.put("suspiciousPackets", suspiciousPackets);
-        stats.put("ipFrequency", ipFrequency);
-        stats.put("protocolDistribution", protocolDistribution);
-        
         return stats;
     }
 
-    public void stopMonitoring() {
-        if (tcpdumpProcess != null) {
-            tcpdumpProcess.destroy();
-            try {
-                tcpdumpProcess.waitFor(5, TimeUnit.SECONDS);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        }
+    public Statistics getStatistics() {
+        return statistics;
+    }
+
+    public List<BlockedIP> getBlockedIPs() {
+        List<BlockedIP> blockedIPList = new ArrayList<>();
+        blockedIPs.forEach((ip, blockedUntil) -> {
+            BlockedIP blocked = new BlockedIP();
+            blocked.setIp(ip);
+            blocked.setBlockedUntil(blockedUntil);
+            blocked.setReason("ML Anomaly Detection");
+            blockedIPList.add(blocked);
+        });
+        return blockedIPList;
     }
 }
